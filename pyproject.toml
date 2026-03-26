@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "asgnxt" }]
-urls = { Homepage = "https://github.com/asgnxt/chatgpt-export", Repository = "https://github.com/asgnxt/chatgpt-export", Issues = "https://github.com/asgnxt/chatgpt-export/issues" }
+urls = { Homepage = "https://github.com/aghatpande/chatgpt-export", Repository = "https://github.com/aghatpande/chatgpt-export", Issues = "https://github.com/aghatpande/chatgpt-export/issues" }
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",
