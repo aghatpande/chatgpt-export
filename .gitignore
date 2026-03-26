@@ -1,0 +1,10 @@
+chatgpt_export_extract/
+.venv/
+__pycache__/
+.DS_Store
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+archive/
+output/

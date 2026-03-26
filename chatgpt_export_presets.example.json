@@ -1,0 +1,55 @@
+{
+  "presets": {
+    "criticality": {
+      "keywords": [
+        "criticality"
+      ],
+      "exclude_keywords": [],
+      "regex_patterns": [],
+      "match_mode": "any",
+      "scope": "title_or_body",
+      "include_project_enabled": false,
+      "include_shared": false,
+      "date_from": null,
+      "date_to": null,
+      "expand_related": true,
+      "related_window_days": 14,
+      "min_score": 0.0
+    },
+    "organoids": {
+      "keywords": [
+        "organoid",
+        "organoids"
+      ],
+      "exclude_keywords": [],
+      "regex_patterns": [],
+      "match_mode": "any",
+      "scope": "title_or_body",
+      "include_project_enabled": false,
+      "include_shared": false,
+      "date_from": null,
+      "date_to": null,
+      "expand_related": false,
+      "related_window_days": 14,
+      "min_score": 0.0
+    },
+    "methods": {
+      "keywords": [
+        "methods",
+        "protocol",
+        "pipeline"
+      ],
+      "exclude_keywords": [],
+      "regex_patterns": [],
+      "match_mode": "any",
+      "scope": "body",
+      "include_project_enabled": false,
+      "include_shared": false,
+      "date_from": null,
+      "date_to": null,
+      "expand_related": false,
+      "related_window_days": 14,
+      "min_score": 0.0
+    }
+  }
+}
