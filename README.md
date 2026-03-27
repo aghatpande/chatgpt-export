@@ -165,6 +165,7 @@ the archive lives under the repo-local `archive/` folder. Use repeated
 also writes a human-readable `summary.md` and a machine-readable `summary.json`,
 plus `attachments.md` and `attachments.json` for a per-conversation attachment
 inventory. Each selected conversation is exported as both JSON and a companion
-Markdown transcript under `conversations/`. The Markdown view is a clean
-conversation transcript, with any Deep Research report appended as its own
-readable section, while the JSON keeps the full raw record for debugging.
+HTML transcript under `conversations/`. The HTML view is a clean conversation
+transcript with any Deep Research report appended as its own readable section,
+and it includes a `Print / Save as PDF` button so the browser can produce a PDF
+snapshot. The JSON keeps the full raw record for debugging.

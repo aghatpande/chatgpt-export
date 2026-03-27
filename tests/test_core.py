@@ -262,11 +262,11 @@ class CoreTests(unittest.TestCase):
             normalized_ids = [item["conversation"]["conversation_id"] for item in normalized]
             self.assertEqual(preview_ids, normalized_ids)
             self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.json").exists())
-            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.md").exists())
+            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.html").exists())
             self.assertTrue((out / "summary.md").exists())
             self.assertTrue((out / "summary.json").exists())
 
-    def test_markdown_is_clean_and_includes_deep_research_report(self) -> None:
+    def test_html_is_clean_and_includes_deep_research_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "export"
             out = Path(tmp) / "out"
@@ -283,21 +283,22 @@ class CoreTests(unittest.TestCase):
             spec = build_spec(keywords=["criticality"], scope="title")
             extract_archive(root, output_dir=out, spec=spec)
 
-            md_path = out / "conversations" / f"{slugify('Magical Properties of Criticality')}-deep.md"
+            html_path = out / "conversations" / f"{slugify('Magical Properties of Criticality')}-deep.html"
             json_path = out / "conversations" / f"{slugify('Magical Properties of Criticality')}-deep.json"
-            self.assertTrue(md_path.exists())
+            self.assertTrue(html_path.exists())
             self.assertTrue(json_path.exists())
 
-            md_text = md_path.read_text(encoding="utf-8")
+            html_text = html_path.read_text(encoding="utf-8")
             normalized = json.loads(json_path.read_text(encoding="utf-8"))
 
-            self.assertIn("# Magical Properties of Criticality", md_text)
-            self.assertIn("what are the magical properties", md_text)
-            self.assertIn("## Deep Research Report", md_text)
-            self.assertIn("This is the report body.", md_text)
-            self.assertNotIn("hidden system text", md_text)
-            self.assertNotIn("The latest state of the widget is:", md_text)
-            self.assertNotIn("is_visually_hidden_from_conversation", md_text)
+            self.assertIn("<title>Magical Properties of Criticality</title>", html_text)
+            self.assertIn("Print / Save as PDF", html_text)
+            self.assertIn("what are the magical properties", html_text)
+            self.assertIn("Deep Research Report", html_text)
+            self.assertIn("This is the report body.", html_text)
+            self.assertNotIn("hidden system text", html_text)
+            self.assertNotIn("The latest state of the widget is:", html_text)
+            self.assertNotIn("is_visually_hidden_from_conversation", html_text)
             self.assertTrue(
                 any("hidden system text" in message["text"] for message in normalized["messages"])
             )
@@ -389,7 +390,7 @@ class CoreTests(unittest.TestCase):
                 attachments = json.load(handle)
             self.assertGreaterEqual(attachments["by_kind"].get("file", 0), 1)
             self.assertEqual(len(attachments["by_conversation"]), 2)
-            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.md").exists())
+            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.html").exists())
             self.assertTrue((out / "attachments.md").exists())
 
 
