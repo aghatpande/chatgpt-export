@@ -657,92 +657,102 @@ def normalize_conversation(
     }
 
 
-def _markdown_quote(text: str) -> str:
-    if not text:
-        return "> _No content._"
-    return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+def _is_visible_transcript_message(message: dict[str, Any]) -> bool:
+    metadata = message.get("metadata") or {}
+    if message.get("author_role") in {"system", "tool"}:
+        return False
+    if metadata.get("is_visually_hidden_from_conversation") or metadata.get("is_user_system_message"):
+        return False
+    if message.get("content_type") in {"code", "user_editable_context"}:
+        return False
+    return bool((message.get("text") or "").strip())
 
 
-def build_conversation_markdown(normalized: dict[str, Any]) -> str:
-    conversation = normalized["conversation"]
-    messages = normalized.get("messages", [])
-    attachments = normalized.get("attachments", [])
+def conversation_visible_messages(conversation: dict[str, Any]) -> list[dict[str, Any]]:
+    return [message for message in conversation_messages(conversation) if _is_visible_transcript_message(message)]
+
+
+def extract_deep_research_report(conversation: dict[str, Any]) -> str | None:
+    prefix = "The latest state of the widget is: "
+
+    for message in reversed(conversation_messages(conversation)):
+        text = (message.get("text") or "").strip()
+        if not text.startswith(prefix):
+            continue
+        payload = text[len(prefix) :].strip()
+        try:
+            widget_state = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if widget_state.get("status") != "completed":
+            continue
+        report_message = widget_state.get("report_message")
+        if not isinstance(report_message, dict):
+            continue
+        content = report_message.get("content") or {}
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            continue
+        report_text = "\n\n".join(
+            part.strip() for part in parts if isinstance(part, str) and part.strip()
+        )
+        if report_text:
+            return report_text
+    return None
+
+
+def build_conversation_markdown(
+    conversation: dict[str, Any],
+    normalized: dict[str, Any],
+) -> str:
+    conversation_meta = normalized["conversation"]
+    messages = conversation_visible_messages(conversation)
+    report_text = extract_deep_research_report(conversation)
 
     lines = [
-        f"# {conversation['title'] or 'Conversation'}",
+        f"# {conversation_meta['title'] or 'Conversation'}",
         "",
         "## Metadata",
         "",
-        f"- Conversation ID: `{conversation['conversation_id']}`",
-        f"- Source file: `{conversation['source_file']}`",
-        f"- Created: `{format_timestamp(conversation['create_time'])}`",
-        f"- Updated: `{format_timestamp(conversation['update_time'])}`",
-        f"- Memory scope: `{conversation['memory_scope'] or '-'}`",
-        f"- Gizmo type: `{conversation['gizmo_type'] or '-'}`",
-        f"- Origin: `{conversation['conversation_origin'] or '-'}`",
-        f"- Shared: `{conversation['is_shared']}`",
-        f"- Project enabled: `{conversation['project_enabled']}`",
-        f"- Score: `{conversation['score']:.2f}`",
+        f"- Conversation ID: `{conversation_meta['conversation_id']}`",
+        f"- Created: `{format_timestamp(conversation_meta['create_time'])}`",
+        f"- Updated: `{format_timestamp(conversation_meta['update_time'])}`",
+        f"- Memory scope: `{conversation_meta['memory_scope'] or '-'}`",
+        f"- Score: `{conversation_meta['score']:.2f}`",
+        f"- Visible messages: `{len(messages)}`",
     ]
 
-    if conversation["reasons"]:
-        lines.append(f"- Reasons: {', '.join(conversation['reasons'])}")
-    if conversation["matched_keywords"]:
-        lines.append(f"- Matched keywords: {', '.join(conversation['matched_keywords'])}")
-    if conversation["regex_matches"]:
-        lines.append(f"- Regex matches: {', '.join(conversation['regex_matches'])}")
-    if conversation["is_related"]:
-        lines.append(f"- Related to: `{conversation['related_to']}`")
-
-    lines.extend(
-        [
-            f"- Message count: `{conversation['message_count']}`",
-            f"- User messages: `{conversation['user_message_count']}`",
-            f"- Assistant messages: `{conversation['assistant_message_count']}`",
-            "",
-            "## Attachments",
-            "",
-        ]
-    )
-
-    if attachments:
-        for attachment in attachments:
-            lines.append(
-                f"- `{attachment['ref']}` [{attachment['kind']}] at `{attachment['source_path']}`"
-            )
-    else:
-        lines.append("_No attachments found._")
+    if conversation_meta["reasons"]:
+        lines.append(f"- Reasons: {', '.join(conversation_meta['reasons'])}")
+    if conversation_meta["matched_keywords"]:
+        lines.append(
+            f"- Matched keywords: {', '.join(conversation_meta['matched_keywords'])}"
+        )
+    if conversation_meta["is_related"]:
+        lines.append(f"- Related to: `{conversation_meta['related_to']}`")
 
     lines.extend(["", "## Transcript", ""])
     if not messages:
-        lines.append("_No messages found._")
+        lines.append("_No visible transcript messages found._")
         lines.append("")
-        return "\n".join(lines)
+    else:
+        for message in messages:
+            role = (message.get("author_role") or "unknown").replace("_", " ").title()
+            lines.extend(
+                [
+                    f"### {role}",
+                    "",
+                    format_timestamp(message.get("create_time")),
+                    "",
+                    (message.get("text") or "").strip(),
+                    "",
+                ]
+            )
 
-    for index, message in enumerate(messages, start=1):
-        role = message.get("author_role") or "unknown"
-        author = message.get("author_name") or "-"
-        lines.extend(
-            [
-                f"### Message {index}",
-                "",
-                f"- Role: `{role}`",
-                f"- Author: `{author}`",
-                f"- Time: `{format_timestamp(message.get('create_time'))}`",
-                f"- Status: `{message.get('status') or '-'}`",
-            ]
-        )
-        if message.get("content_type"):
-            lines.append(f"- Content type: `{message['content_type']}`")
-        metadata = message.get("metadata")
-        if isinstance(metadata, dict) and metadata:
-            lines.append("")
-            lines.append("```json")
-            lines.append(json.dumps(metadata, indent=2, ensure_ascii=True))
-            lines.append("```")
-        lines.append("")
-        lines.append(_markdown_quote(message.get("text", "")))
-        lines.append("")
+    if report_text:
+        lines.extend(["## Deep Research Report", "", report_text.strip(), ""])
 
     return "\n".join(lines)
 
@@ -1003,7 +1013,7 @@ def extract_archive(
         out_path = output_dir / "conversations" / f"{safe_name}.json"
         write_json(out_path, normalized)
         (out_path.with_suffix(".md")).write_text(
-            build_conversation_markdown(normalized),
+            build_conversation_markdown(conversation, normalized),
             encoding="utf-8",
         )
         normalized_conversations.append(normalized)
