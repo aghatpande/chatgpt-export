@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import json
 import re
 from collections import Counter
@@ -657,94 +658,587 @@ def normalize_conversation(
     }
 
 
-def _markdown_quote(text: str) -> str:
-    if not text:
-        return "> _No content._"
-    return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+def _is_visible_transcript_message(message: dict[str, Any]) -> bool:
+    metadata = message.get("metadata") or {}
+    if message.get("author_role") in {"system", "tool"}:
+        return False
+    if metadata.get("is_visually_hidden_from_conversation") or metadata.get("is_user_system_message"):
+        return False
+    if message.get("content_type") in {"code", "user_editable_context"}:
+        return False
+    return bool((message.get("text") or "").strip())
 
 
-def build_conversation_markdown(normalized: dict[str, Any]) -> str:
-    conversation = normalized["conversation"]
-    messages = normalized.get("messages", [])
-    attachments = normalized.get("attachments", [])
+def conversation_visible_messages(conversation: dict[str, Any]) -> list[dict[str, Any]]:
+    return [message for message in conversation_messages(conversation) if _is_visible_transcript_message(message)]
 
-    lines = [
-        f"# {conversation['title'] or 'Conversation'}",
-        "",
-        "## Metadata",
-        "",
-        f"- Conversation ID: `{conversation['conversation_id']}`",
-        f"- Source file: `{conversation['source_file']}`",
-        f"- Created: `{format_timestamp(conversation['create_time'])}`",
-        f"- Updated: `{format_timestamp(conversation['update_time'])}`",
-        f"- Memory scope: `{conversation['memory_scope'] or '-'}`",
-        f"- Gizmo type: `{conversation['gizmo_type'] or '-'}`",
-        f"- Origin: `{conversation['conversation_origin'] or '-'}`",
-        f"- Shared: `{conversation['is_shared']}`",
-        f"- Project enabled: `{conversation['project_enabled']}`",
-        f"- Score: `{conversation['score']:.2f}`",
-    ]
 
-    if conversation["reasons"]:
-        lines.append(f"- Reasons: {', '.join(conversation['reasons'])}")
-    if conversation["matched_keywords"]:
-        lines.append(f"- Matched keywords: {', '.join(conversation['matched_keywords'])}")
-    if conversation["regex_matches"]:
-        lines.append(f"- Regex matches: {', '.join(conversation['regex_matches'])}")
-    if conversation["is_related"]:
-        lines.append(f"- Related to: `{conversation['related_to']}`")
+def extract_deep_research_report(conversation: dict[str, Any]) -> str | None:
+    prefix = "The latest state of the widget is: "
 
-    lines.extend(
-        [
-            f"- Message count: `{conversation['message_count']}`",
-            f"- User messages: `{conversation['user_message_count']}`",
-            f"- Assistant messages: `{conversation['assistant_message_count']}`",
-            "",
-            "## Attachments",
-            "",
-        ]
+    for message in reversed(conversation_messages(conversation)):
+        text = (message.get("text") or "").strip()
+        if not text.startswith(prefix):
+            continue
+        payload = text[len(prefix) :].strip()
+        try:
+            widget_state = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if widget_state.get("status") != "completed":
+            continue
+        report_message = widget_state.get("report_message")
+        if not isinstance(report_message, dict):
+            continue
+        content = report_message.get("content") or {}
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            continue
+        report_text = "\n\n".join(
+            part.strip() for part in parts if isinstance(part, str) and part.strip()
+        )
+        if report_text:
+            return report_text
+    return None
+
+
+def _render_inline_html(text: str) -> str:
+    escaped = html.escape(text)
+    escaped = re.sub(
+        r"!\[([^\]]*)\]\(([^)]+)\)",
+        lambda match: (
+            f'<img class="inline-image" src="{html.escape(match.group(2), quote=True)}" '
+            f'alt="{html.escape(match.group(1), quote=True)}" />'
+        ),
+        escaped,
+    )
+    escaped = re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        lambda match: (
+            f'<a href="{html.escape(match.group(2), quote=True)}" target="_blank" rel="noreferrer">'
+            f"{match.group(1)}</a>"
+        ),
+        escaped,
+    )
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", escaped)
+    return escaped
+
+
+def _looks_like_table_separator(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and all(
+        cell.strip() == "" or set(cell.strip()) <= {"-", ":", " "}
+        for cell in stripped.strip("|").split("|")
     )
 
+
+def _split_table_row(line: str) -> list[str]:
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return cells
+
+
+def _render_markdown_table(lines: list[str]) -> str:
+    if len(lines) < 2:
+        return ""
+    headers = _split_table_row(lines[0])
+    body_lines = [line for line in lines[2:] if line.strip()]
+    rows = [_split_table_row(line) for line in body_lines]
+    parts = ["<table>", "<thead>", "<tr>"]
+    for header in headers:
+        parts.append(f"<th>{_render_inline_html(header)}</th>")
+    parts.extend(["</tr>", "</thead>", "<tbody>"])
+    for row in rows:
+        parts.append("<tr>")
+        for cell in row:
+            parts.append(f"<td>{_render_inline_html(cell)}</td>")
+        parts.append("</tr>")
+    parts.extend(["</tbody>", "</table>"])
+    return "".join(parts)
+
+
+def _render_markdown_blocks(text: str) -> str:
+    lines = text.splitlines()
+    parts: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if not stripped:
+            i += 1
+            continue
+
+        fence_match = re.match(r"^(```|~~~)\s*([a-zA-Z0-9_-]+)?\s*$", stripped)
+        if fence_match:
+            fence = fence_match.group(1)
+            language = fence_match.group(2) or ""
+            i += 1
+            code_lines: list[str] = []
+            while i < len(lines) and not lines[i].strip().startswith(fence):
+                code_lines.append(lines[i])
+                i += 1
+            if i < len(lines):
+                i += 1
+            code_block = html.escape("\n".join(code_lines))
+            language_class = html.escape(language, quote=True)
+            parts.append(
+                f'<pre><code class="{language_class}">{code_block}</code></pre>'
+            )
+            continue
+
+        heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+        if heading_match:
+            level = len(heading_match.group(1))
+            parts.append(
+                f"<h{level}>{_render_inline_html(heading_match.group(2).strip())}</h{level}>"
+            )
+            i += 1
+            continue
+
+        if stripped.startswith("|") and i + 1 < len(lines) and _looks_like_table_separator(lines[i + 1]):
+            table_lines = [lines[i], lines[i + 1]]
+            i += 2
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i])
+                i += 1
+            parts.append(_render_markdown_table(table_lines))
+            continue
+
+        if stripped.startswith(">"):
+            quote_lines: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                quote_lines.append(re.sub(r"^\s*>\s?", "", lines[i]))
+                i += 1
+            quote_html = _render_markdown_blocks("\n".join(quote_lines))
+            parts.append(f"<blockquote>{quote_html}</blockquote>")
+            continue
+
+        list_match = re.match(r"^(\s*)([-*+]|\d+\.)\s+(.*)$", line)
+        if list_match:
+            indent = len(list_match.group(1))
+            ordered = bool(re.match(r"\d+\.", list_match.group(2)))
+            items: list[str] = []
+            while i < len(lines):
+                current = lines[i]
+                current_match = re.match(r"^(\s*)([-*+]|\d+\.)\s+(.*)$", current)
+                if not current_match or len(current_match.group(1)) != indent:
+                    break
+                items.append(_render_inline_html(current_match.group(3).strip()))
+                i += 1
+            tag = "ol" if ordered else "ul"
+            parts.append(f"<{tag}>" + "".join(f"<li>{item}</li>" for item in items) + f"</{tag}>")
+            continue
+
+        para_lines = [stripped]
+        i += 1
+        while i < len(lines):
+            next_line = lines[i]
+            next_stripped = next_line.strip()
+            if not next_stripped:
+                break
+            if re.match(r"^(#{1,6})\s+", next_stripped):
+                break
+            if next_stripped.startswith("|") and i + 1 < len(lines) and _looks_like_table_separator(lines[i + 1]):
+                break
+            if next_stripped.startswith(">"):
+                break
+            if re.match(r"^(\s*)([-*+]|\d+\.)\s+", next_line):
+                break
+            if re.match(r"^(```|~~~)", next_stripped):
+                break
+            para_lines.append(next_stripped)
+            i += 1
+        parts.append(f"<p>{_render_inline_html(' '.join(para_lines))}</p>")
+
+    return "".join(parts)
+
+
+def _message_media_html(message: dict[str, Any]) -> str:
+    metadata = message.get("metadata") or {}
+    media_items: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for reference in metadata.get("content_references", []) or []:
+        for image in reference.get("images", []) or []:
+            image_result = image.get("image_result") or {}
+            url = image_result.get("content_url") or image_result.get("url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            media_items.append(
+                {
+                    "url": url,
+                    "title": image_result.get("title") or "",
+                    "alt": reference.get("alt") or image.get("image_search_query") or "",
+                }
+            )
+
+    attachments = metadata.get("attachments", []) or []
+    for attachment in attachments:
+        ref = attachment.get("file_id") or attachment.get("file_name") or attachment.get("path")
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        media_items.append({"url": ref, "title": "", "alt": "attachment"})
+
+    if not media_items:
+        return ""
+
+    parts = ['<div class="message-media">']
+    for item in media_items:
+        url = html.escape(item["url"], quote=True)
+        alt = html.escape(item["alt"], quote=True)
+        title = html.escape(item["title"], quote=True)
+        parts.append(
+            f'<figure><a href="{url}" target="_blank" rel="noreferrer"><img src="{url}" alt="{alt}" /></a>'
+            + (f"<figcaption>{title or alt or url}</figcaption>" if (title or alt) else "")
+            + "</figure>"
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def build_conversation_html(
+    conversation: dict[str, Any],
+    normalized: dict[str, Any],
+) -> str:
+    conversation_meta = normalized["conversation"]
+    visible_messages = conversation_visible_messages(conversation)
+    report_text = extract_deep_research_report(conversation)
+    attachments = normalized.get("attachments", [])
+    report_html = _render_markdown_blocks(report_text) if report_text else ""
+
+    head_title = html.escape(conversation_meta["title"] or "Conversation")
+    header_lines = [
+        f"<dt>Conversation ID</dt><dd><code>{html.escape(conversation_meta['conversation_id'])}</code></dd>",
+        f"<dt>Created</dt><dd>{html.escape(format_timestamp(conversation_meta['create_time']))}</dd>",
+        f"<dt>Updated</dt><dd>{html.escape(format_timestamp(conversation_meta['update_time']))}</dd>",
+        f"<dt>Memory scope</dt><dd>{html.escape(conversation_meta['memory_scope'] or '-')}</dd>",
+        f"<dt>Score</dt><dd>{conversation_meta['score']:.2f}</dd>",
+        f"<dt>Visible messages</dt><dd>{len(visible_messages)}</dd>",
+    ]
+    if conversation_meta["reasons"]:
+        header_lines.append(
+            f"<dt>Reasons</dt><dd>{html.escape(', '.join(conversation_meta['reasons']))}</dd>"
+        )
+    if conversation_meta["matched_keywords"]:
+        header_lines.append(
+            f"<dt>Matched keywords</dt><dd>{html.escape(', '.join(conversation_meta['matched_keywords']))}</dd>"
+        )
+    if conversation_meta["is_related"]:
+        header_lines.append(
+            f"<dt>Related to</dt><dd><code>{html.escape(str(conversation_meta['related_to']))}</code></dd>"
+        )
+
+    attachment_lines = []
     if attachments:
         for attachment in attachments:
-            lines.append(
-                f"- `{attachment['ref']}` [{attachment['kind']}] at `{attachment['source_path']}`"
+            attachment_lines.append(
+                "<li>"
+                f"<code>{html.escape(attachment['ref'])}</code> "
+                f"[{html.escape(attachment['kind'])}] "
+                f"<span class=\"muted\">{html.escape(attachment['source_path'])}</span>"
+                "</li>"
             )
     else:
-        lines.append("_No attachments found._")
+        attachment_lines.append("<li class=\"muted\">No attachments found.</li>")
 
-    lines.extend(["", "## Transcript", ""])
-    if not messages:
-        lines.append("_No messages found._")
-        lines.append("")
-        return "\n".join(lines)
+    transcript_blocks: list[str] = []
+    if not visible_messages:
+        transcript_blocks.append('<p class="muted">No visible transcript messages found.</p>')
+    else:
+        for index, message in enumerate(visible_messages, start=1):
+            role = (message.get("author_role") or "unknown").replace("_", " ").title()
+            time = html.escape(format_timestamp(message.get("create_time")))
+            author = html.escape(message.get("author_name") or "-")
+            text = (message.get("text") or "").strip()
+            body_html = _render_markdown_blocks(text) if text else '<p class="muted">No content.</p>'
+            media_html = _message_media_html(message)
+            transcript_blocks.append(
+                "<article class=\"message\">"
+                f"<header><span class=\"message-index\">{index}</span><span class=\"message-role\">{html.escape(role)}</span>"
+                f"<span class=\"message-author\">{author}</span><span class=\"message-time\">{time}</span></header>"
+                f"<div class=\"message-body\">{body_html}{media_html}</div>"
+                "</article>"
+            )
 
-    for index, message in enumerate(messages, start=1):
-        role = message.get("author_role") or "unknown"
-        author = message.get("author_name") or "-"
-        lines.extend(
-            [
-                f"### Message {index}",
-                "",
-                f"- Role: `{role}`",
-                f"- Author: `{author}`",
-                f"- Time: `{format_timestamp(message.get('create_time'))}`",
-                f"- Status: `{message.get('status') or '-'}`",
-            ]
+    report_section = ""
+    if report_html:
+        report_section = (
+            "<section class=\"report\">"
+            "<h2>Deep Research Report</h2>"
+            f"{report_html}"
+            "</section>"
         )
-        if message.get("content_type"):
-            lines.append(f"- Content type: `{message['content_type']}`")
-        metadata = message.get("metadata")
-        if isinstance(metadata, dict) and metadata:
-            lines.append("")
-            lines.append("```json")
-            lines.append(json.dumps(metadata, indent=2, ensure_ascii=True))
-            lines.append("```")
-        lines.append("")
-        lines.append(_markdown_quote(message.get("text", "")))
-        lines.append("")
 
-    return "\n".join(lines)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{head_title}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f4efe6;
+      --panel: #fffdf8;
+      --ink: #1f1a17;
+      --muted: #6d6258;
+      --accent: #6b4e3d;
+      --accent-2: #ae6b3c;
+      --line: rgba(31, 26, 23, 0.12);
+    }}
+    html, body {{
+      margin: 0;
+      padding: 0;
+      background: radial-gradient(circle at top, #fff8eb 0%, var(--bg) 48%, #efe6da 100%);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    body {{ line-height: 1.55; }}
+    .page {{
+      max-width: 1024px;
+      margin: 0 auto;
+      padding: 24px;
+    }}
+    .toolbar {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      padding: 12px 0 20px;
+      backdrop-filter: blur(8px);
+    }}
+    .toolbar button, .toolbar a {{
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 10px 16px;
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+    }}
+    .toolbar button:hover, .toolbar a:hover {{
+      border-color: rgba(107, 78, 61, 0.4);
+    }}
+    .hero {{
+      padding: 28px;
+      border: 1px solid var(--line);
+      background: rgba(255, 253, 248, 0.88);
+      border-radius: 24px;
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.08);
+    }}
+    h1, h2, h3, h4, h5, h6 {{
+      line-height: 1.15;
+      margin: 0 0 0.6em;
+    }}
+    h1 {{
+      font-size: clamp(2rem, 4vw, 3.5rem);
+      letter-spacing: -0.04em;
+    }}
+    h2 {{
+      margin-top: 2rem;
+      font-size: 1.35rem;
+    }}
+    .meta-grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 16px;
+      margin-top: 18px;
+    }}
+    .meta-grid dl {{
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr);
+      gap: 8px 16px;
+      margin: 0;
+    }}
+    .meta-grid dt {{
+      color: var(--muted);
+      font-weight: 600;
+    }}
+    .meta-grid dd {{
+      margin: 0;
+    }}
+    .section {{
+      margin-top: 24px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      background: rgba(255, 253, 248, 0.8);
+      border-radius: 20px;
+    }}
+    .muted {{
+      color: var(--muted);
+    }}
+    .transcript {{
+      display: grid;
+      gap: 18px;
+    }}
+    .message {{
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.72);
+    }}
+    .message header {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      font-size: 0.92rem;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }}
+    .message-role {{
+      font-weight: 700;
+      color: var(--accent);
+    }}
+    .message-index {{
+      display: inline-flex;
+      min-width: 1.9rem;
+      justify-content: center;
+      border-radius: 999px;
+      background: rgba(174, 107, 60, 0.12);
+      color: var(--accent-2);
+      font-weight: 700;
+      padding: 0 0.5rem;
+    }}
+    .message-body p {{
+      margin: 0 0 1em;
+    }}
+    .message-body p:last-child {{
+      margin-bottom: 0;
+    }}
+    .message-body pre {{
+      overflow-x: auto;
+      padding: 14px 16px;
+      background: #171312;
+      color: #f5e9dc;
+      border-radius: 14px;
+    }}
+    .message-body code {{
+      background: rgba(107, 78, 61, 0.08);
+      padding: 0.12rem 0.28rem;
+      border-radius: 6px;
+    }}
+    .message-body pre code {{
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }}
+    .message-body blockquote {{
+      margin: 0;
+      padding: 0.25rem 0 0.25rem 1rem;
+      border-left: 4px solid rgba(107, 78, 61, 0.25);
+      color: var(--muted);
+    }}
+    .message-body table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      font-size: 0.95rem;
+    }}
+    .message-body th, .message-body td {{
+      border: 1px solid var(--line);
+      padding: 0.55rem 0.7rem;
+      vertical-align: top;
+    }}
+    .message-body th {{
+      background: rgba(107, 78, 61, 0.08);
+      text-align: left;
+    }}
+    .message-body img {{
+      max-width: 100%;
+      height: auto;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+    }}
+    .message-media {{
+      display: grid;
+      gap: 14px;
+      margin-top: 16px;
+    }}
+    .message-media figure {{
+      margin: 0;
+    }}
+    .message-media figcaption {{
+      margin-top: 0.35rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }}
+    .report {{
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+    }}
+    .report .citation, .citation {{
+      font-size: 0.88em;
+      color: var(--muted);
+    }}
+    @media print {{
+      body {{
+        background: white;
+      }}
+      .toolbar {{
+        display: none;
+      }}
+      .page {{
+        max-width: none;
+        padding: 0;
+      }}
+      .hero, .section, .message {{
+        box-shadow: none;
+        background: white;
+      }}
+      a {{
+        color: inherit;
+        text-decoration: none;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="toolbar">
+      <button type="button" onclick="window.print()">Print / Save as PDF</button>
+    </div>
+    <header class="hero">
+      <h1>{head_title}</h1>
+      <p class="muted">HTML export with print-friendly CSS. Use the button above to save a PDF from your browser.</p>
+      <div class="meta-grid">
+        <dl>
+          {''.join(header_lines)}
+        </dl>
+      </div>
+    </header>
+
+    <section class="section">
+      <h2>Attachments</h2>
+      <ul>
+        {''.join(attachment_lines)}
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>Transcript</h2>
+      <div class="transcript">
+        {''.join(transcript_blocks)}
+      </div>
+    </section>
+
+    {report_section}
+  </div>
+</body>
+</html>
+"""
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -1000,10 +1494,11 @@ def extract_archive(
         conversation = item["conversation"]
         normalized = normalize_conversation(conversation, Path(item["source_file"]), match)
         safe_name = f"{slugify(match.title)}-{match.conversation_id[:8]}"
-        out_path = output_dir / "conversations" / f"{safe_name}.json"
-        write_json(out_path, normalized)
-        (out_path.with_suffix(".md")).write_text(
-            build_conversation_markdown(normalized),
+        json_path = output_dir / "conversations" / f"{safe_name}.json"
+        html_path = output_dir / "conversations" / f"{safe_name}.html"
+        write_json(json_path, normalized)
+        html_path.write_text(
+            build_conversation_html(conversation, normalized),
             encoding="utf-8",
         )
         normalized_conversations.append(normalized)

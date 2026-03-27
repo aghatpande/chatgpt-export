@@ -19,6 +19,7 @@ from chatgpt_export.core import (  # noqa: E402
     extract_archive,
     preview_matches,
     score_conversation,
+    slugify,
 )
 from chatgpt_export.cli import _resolve_command, _save_preset, _spec_from_args, _load_presets, main  # noqa: E402
 
@@ -82,6 +83,59 @@ def write_export(root: Path, conversations: list[dict], shared_ids: list[str] | 
         shared = [{"conversation_id": cid, "title": ""} for cid in shared_ids]
         with (root / "shared_conversations.json").open("w", encoding="utf-8") as handle:
             json.dump(shared, handle)
+
+
+def make_deep_research_conversation(
+    conversation_id: str,
+    title: str,
+    *,
+    body: str,
+    report_text: str,
+    create_time: float = 1_700_000_000.0,
+) -> dict:
+    conversation = make_conversation(
+        conversation_id,
+        title,
+        body=body,
+        create_time=create_time,
+    )
+    conversation["mapping"]["hidden_system"] = {
+        "id": "hidden_system",
+        "parent": "assistant",
+        "children": ["widget_state"],
+        "message": {
+            "author": {"role": "system", "name": None},
+            "content": {"content_type": "text", "parts": ["hidden system text"]},
+            "create_time": create_time + 2,
+            "status": "finished_successfully",
+            "metadata": {"is_visually_hidden_from_conversation": True},
+        },
+    }
+    widget_state = {
+        "status": "completed",
+        "report_message": {
+            "content": {
+                "content_type": "text",
+                "parts": [report_text],
+            }
+        },
+    }
+    conversation["mapping"]["widget_state"] = {
+        "id": "widget_state",
+        "parent": "hidden_system",
+        "children": [],
+        "message": {
+            "author": {"role": "tool", "name": None},
+            "content": {
+                "content_type": "text",
+                "parts": [f'The latest state of the widget is: {json.dumps(widget_state)}'],
+            },
+            "create_time": create_time + 3,
+            "status": "finished_successfully",
+            "metadata": {"is_visually_hidden_from_conversation": True},
+        },
+    }
+    return conversation
 
 
 def make_cli_args(**overrides) -> argparse.Namespace:
@@ -208,14 +262,52 @@ class CoreTests(unittest.TestCase):
             normalized_ids = [item["conversation"]["conversation_id"] for item in normalized]
             self.assertEqual(preview_ids, normalized_ids)
             self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.json").exists())
-            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.md").exists())
-            md_text = (out / "conversations" / "criticality-metrics-proposal-seed.md").read_text(
-                encoding="utf-8"
-            )
-            self.assertIn("# Criticality Metrics Proposal", md_text)
-            self.assertIn("criticality in body", md_text)
+            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.html").exists())
             self.assertTrue((out / "summary.md").exists())
             self.assertTrue((out / "summary.json").exists())
+
+    def test_html_is_clean_and_includes_deep_research_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "export"
+            out = Path(tmp) / "out"
+            report_text = "# Deep Research Report\n\nThis is the report body."
+            conversations = [
+                make_deep_research_conversation(
+                    "deep",
+                    "Magical Properties of Criticality",
+                    body="what are the magical properties of complex systems that emerge at critical points?",
+                    report_text=report_text,
+                )
+            ]
+            write_export(root, conversations)
+            spec = build_spec(keywords=["criticality"], scope="title")
+            extract_archive(root, output_dir=out, spec=spec)
+
+            html_path = out / "conversations" / f"{slugify('Magical Properties of Criticality')}-deep.html"
+            json_path = out / "conversations" / f"{slugify('Magical Properties of Criticality')}-deep.json"
+            self.assertTrue(html_path.exists())
+            self.assertTrue(json_path.exists())
+
+            html_text = html_path.read_text(encoding="utf-8")
+            normalized = json.loads(json_path.read_text(encoding="utf-8"))
+
+            self.assertIn("<title>Magical Properties of Criticality</title>", html_text)
+            self.assertIn("Print / Save as PDF", html_text)
+            self.assertIn("what are the magical properties", html_text)
+            self.assertIn("Deep Research Report", html_text)
+            self.assertIn("This is the report body.", html_text)
+            self.assertNotIn("hidden system text", html_text)
+            self.assertNotIn("The latest state of the widget is:", html_text)
+            self.assertNotIn("is_visually_hidden_from_conversation", html_text)
+            self.assertTrue(
+                any("hidden system text" in message["text"] for message in normalized["messages"])
+            )
+            self.assertTrue(
+                any(
+                    "The latest state of the widget is:" in message["text"]
+                    for message in normalized["messages"]
+                )
+            )
 
     def test_wizard_command_is_preserved(self) -> None:
         self.assertEqual(_resolve_command(["wizard", "/tmp/export"]), ["wizard", "/tmp/export"])
@@ -298,7 +390,7 @@ class CoreTests(unittest.TestCase):
                 attachments = json.load(handle)
             self.assertGreaterEqual(attachments["by_kind"].get("file", 0), 1)
             self.assertEqual(len(attachments["by_conversation"]), 2)
-            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.md").exists())
+            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.html").exists())
             self.assertTrue((out / "attachments.md").exists())
 
 
