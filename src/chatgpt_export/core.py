@@ -783,8 +783,10 @@ def _render_markdown_blocks(text: str) -> str:
                 i += 1
             if i < len(lines):
                 i += 1
+            code_block = html.escape("\n".join(code_lines))
+            language_class = html.escape(language, quote=True)
             parts.append(
-                f'<pre><code class="{html.escape(language, quote=True)}">{html.escape("\n".join(code_lines))}</code></pre>'
+                f'<pre><code class="{language_class}">{code_block}</code></pre>'
             )
             continue
 
@@ -811,7 +813,8 @@ def _render_markdown_blocks(text: str) -> str:
             while i < len(lines) and lines[i].strip().startswith(">"):
                 quote_lines.append(re.sub(r"^\s*>\s?", "", lines[i]))
                 i += 1
-            parts.append(f'<blockquote>{_render_markdown_blocks("\n".join(quote_lines))}</blockquote>')
+            quote_html = _render_markdown_blocks("\n".join(quote_lines))
+            parts.append(f"<blockquote>{quote_html}</blockquote>")
             continue
 
         list_match = re.match(r"^(\s*)([-*+]|\d+\.)\s+(.*)$", line)
