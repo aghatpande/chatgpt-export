@@ -207,6 +207,13 @@ class CoreTests(unittest.TestCase):
                 normalized = json.load(handle)
             normalized_ids = [item["conversation"]["conversation_id"] for item in normalized]
             self.assertEqual(preview_ids, normalized_ids)
+            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.json").exists())
+            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.md").exists())
+            md_text = (out / "conversations" / "criticality-metrics-proposal-seed.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("# Criticality Metrics Proposal", md_text)
+            self.assertIn("criticality in body", md_text)
             self.assertTrue((out / "summary.md").exists())
             self.assertTrue((out / "summary.json").exists())
 
@@ -291,6 +298,7 @@ class CoreTests(unittest.TestCase):
                 attachments = json.load(handle)
             self.assertGreaterEqual(attachments["by_kind"].get("file", 0), 1)
             self.assertEqual(len(attachments["by_conversation"]), 2)
+            self.assertTrue((out / "conversations" / "criticality-metrics-proposal-seed.md").exists())
             self.assertTrue((out / "attachments.md").exists())
 
 

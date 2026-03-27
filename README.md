@@ -164,4 +164,5 @@ the archive lives under the repo-local `archive/` folder. Use repeated
 `--match-mode`, and `--expand-related` to tune the selection. Each extraction
 also writes a human-readable `summary.md` and a machine-readable `summary.json`,
 plus `attachments.md` and `attachments.json` for a per-conversation attachment
-inventory.
+inventory. Each selected conversation is exported as both JSON and a companion
+Markdown transcript under `conversations/`.

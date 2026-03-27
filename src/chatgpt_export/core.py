@@ -196,6 +196,19 @@ def conversation_timestamp(conversation: dict[str, Any]) -> datetime | None:
         return None
 
 
+def format_timestamp(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        except (TypeError, ValueError, OSError):
+            return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
 def conversation_attachment_keys(conversation: dict[str, Any]) -> set[str]:
     return {record["ref"] for record in conversation_attachment_records(conversation)}
 
@@ -644,6 +657,96 @@ def normalize_conversation(
     }
 
 
+def _markdown_quote(text: str) -> str:
+    if not text:
+        return "> _No content._"
+    return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+
+
+def build_conversation_markdown(normalized: dict[str, Any]) -> str:
+    conversation = normalized["conversation"]
+    messages = normalized.get("messages", [])
+    attachments = normalized.get("attachments", [])
+
+    lines = [
+        f"# {conversation['title'] or 'Conversation'}",
+        "",
+        "## Metadata",
+        "",
+        f"- Conversation ID: `{conversation['conversation_id']}`",
+        f"- Source file: `{conversation['source_file']}`",
+        f"- Created: `{format_timestamp(conversation['create_time'])}`",
+        f"- Updated: `{format_timestamp(conversation['update_time'])}`",
+        f"- Memory scope: `{conversation['memory_scope'] or '-'}`",
+        f"- Gizmo type: `{conversation['gizmo_type'] or '-'}`",
+        f"- Origin: `{conversation['conversation_origin'] or '-'}`",
+        f"- Shared: `{conversation['is_shared']}`",
+        f"- Project enabled: `{conversation['project_enabled']}`",
+        f"- Score: `{conversation['score']:.2f}`",
+    ]
+
+    if conversation["reasons"]:
+        lines.append(f"- Reasons: {', '.join(conversation['reasons'])}")
+    if conversation["matched_keywords"]:
+        lines.append(f"- Matched keywords: {', '.join(conversation['matched_keywords'])}")
+    if conversation["regex_matches"]:
+        lines.append(f"- Regex matches: {', '.join(conversation['regex_matches'])}")
+    if conversation["is_related"]:
+        lines.append(f"- Related to: `{conversation['related_to']}`")
+
+    lines.extend(
+        [
+            f"- Message count: `{conversation['message_count']}`",
+            f"- User messages: `{conversation['user_message_count']}`",
+            f"- Assistant messages: `{conversation['assistant_message_count']}`",
+            "",
+            "## Attachments",
+            "",
+        ]
+    )
+
+    if attachments:
+        for attachment in attachments:
+            lines.append(
+                f"- `{attachment['ref']}` [{attachment['kind']}] at `{attachment['source_path']}`"
+            )
+    else:
+        lines.append("_No attachments found._")
+
+    lines.extend(["", "## Transcript", ""])
+    if not messages:
+        lines.append("_No messages found._")
+        lines.append("")
+        return "\n".join(lines)
+
+    for index, message in enumerate(messages, start=1):
+        role = message.get("author_role") or "unknown"
+        author = message.get("author_name") or "-"
+        lines.extend(
+            [
+                f"### Message {index}",
+                "",
+                f"- Role: `{role}`",
+                f"- Author: `{author}`",
+                f"- Time: `{format_timestamp(message.get('create_time'))}`",
+                f"- Status: `{message.get('status') or '-'}`",
+            ]
+        )
+        if message.get("content_type"):
+            lines.append(f"- Content type: `{message['content_type']}`")
+        metadata = message.get("metadata")
+        if isinstance(metadata, dict) and metadata:
+            lines.append("")
+            lines.append("```json")
+            lines.append(json.dumps(metadata, indent=2, ensure_ascii=True))
+            lines.append("```")
+        lines.append("")
+        lines.append(_markdown_quote(message.get("text", "")))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -899,6 +1002,10 @@ def extract_archive(
         safe_name = f"{slugify(match.title)}-{match.conversation_id[:8]}"
         out_path = output_dir / "conversations" / f"{safe_name}.json"
         write_json(out_path, normalized)
+        (out_path.with_suffix(".md")).write_text(
+            build_conversation_markdown(normalized),
+            encoding="utf-8",
+        )
         normalized_conversations.append(normalized)
         selected_records.append(
             {
